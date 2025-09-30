@@ -10,6 +10,9 @@ def load_input_files(file_id: str) -> List[str]:
     return files
 @router.post("/{file_id}")
 def process_file(file_id: str, models: str = "AB"):
+    models = (models or "AB").upper()
+    if any(m not in {"A", "B"} for m in models):
+        raise HTTPException(status_code=400, detail="Parâmetro 'models' inválido. Use combinações de 'A' e 'B'.")
     files = load_input_files(file_id); work_dir = storage.file_dir(file_id, "working")
     all_records_A = []; all_records_B = []
     for path in files:
