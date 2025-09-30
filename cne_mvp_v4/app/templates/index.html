@@ -1,0 +1,44 @@
+
+<!doctype html><html lang="pt"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>CNE MVP - Upload</title>
+<style>
+ body{font-family:system-ui,Arial,sans-serif;margin:2rem}
+ .card{border:1px solid #ddd;border-radius:8px;padding:1rem;margin-bottom:1rem}
+ table{width:100%;border-collapse:collapse}th,td{border-bottom:1px solid #eee;padding:.5rem;text-align:left;font-size:14px}
+ .btn{display:inline-block;padding:.4rem .8rem;border:1px solid #777;border-radius:6px;text-decoration:none;color:#222;margin-right:.4rem}
+ .btn:hover{background:#f2f2f2}.muted{color:#777}.small{font-size:12px}
+</style></head><body>
+<h1>CNE MVP</h1><p class="muted">Upload → Process → Reconcile → Resolve → Validate → Export</p>
+<div class="card"><h2>Upload</h2><form id="uploadForm">
+  <input type="file" name="files" multiple required/>
+  <button class="btn" type="submit">Carregar</button>
+  <span id="uploadStatus" class="small"></span>
+</form></div>
+<div class="card"><h2>Ficheiros</h2><table><thead><tr><th>file_id</th><th>inputs</th><th>ações</th><th>UI</th></tr></thead>
+<tbody>
+{% for f in files %}
+<tr>
+  <td><code>{{ f.file_id }}</code></td>
+  <td>{{ f.input_files | join(", ") }}</td>
+  <td class="small">
+    <a class="btn" href="/process/{{ f.file_id }}?models=AB" target="_blank">/process</a>
+    <a class="btn" href="/reconcile/{{ f.file_id }}" target="_blank">/reconcile</a>
+    <a class="btn" href="/validate/{{ f.file_id }}?use_final=false" target="_blank">/validate (pré)</a>
+    <a class="btn" href="/export/{{ f.file_id }}/csv" target="_blank">/export CSV</a>
+  </td>
+  <td><a class="btn" href="/ui/{{ f.file_id }}">abrir</a></td>
+</tr>
+{% endfor %}
+</tbody></table></div>
+<script>
+const form=document.getElementById('uploadForm');
+form.addEventListener('submit',async e=>{
+  e.preventDefault();
+  const fd=new FormData(form);
+  const res=await fetch('/upload',{method:'POST',body:fd});
+  const data=await res.json();
+  document.getElementById('uploadStatus').textContent=JSON.stringify(data);
+  window.location.reload();
+});
+</script></body></html>
