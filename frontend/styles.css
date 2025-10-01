@@ -210,6 +210,86 @@ th {
   align-items: flex-end;
 }
 
+.stage-upload {
+  flex: 1 1 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.upload-dropzone {
+  position: relative;
+  border: 2px dashed var(--border);
+  border-radius: 16px;
+  padding: 1.75rem 1.25rem;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.7);
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+  cursor: pointer;
+}
+
+.upload-dropzone.is-dragover,
+.upload-dropzone:hover {
+  border-color: var(--accent);
+  background: rgba(38, 90, 204, 0.1);
+  transform: translateY(-1px);
+}
+
+.upload-dropzone[data-state="uploading"] {
+  border-style: solid;
+  opacity: 0.75;
+  cursor: progress;
+}
+
+.upload-dropzone[data-state="success"] {
+  border-color: rgba(16, 185, 129, 0.6);
+  background: rgba(16, 185, 129, 0.12);
+}
+
+.upload-dropzone[data-state="error"] {
+  border-color: rgba(239, 68, 68, 0.6);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.upload-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+.upload-title {
+  margin: 0 0 0.35rem;
+  font-weight: 600;
+}
+
+.upload-subtitle {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.upload-browse {
+  background: none;
+  border: none;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+
+.upload-status[data-state="success"] {
+  color: #047857;
+}
+
+.upload-status[data-state="error"] {
+  color: #b91c1c;
+}
+
 .stage-form label {
   display: flex;
   flex-direction: column;

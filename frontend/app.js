@@ -41,6 +41,7 @@ const template = document.querySelector("#stage-template");
 
 let dashboardState = [];
 let activeStage = "ingest";
+const stageNotices = {};
 
 async function fetchJSON(url, options) {
   const response = await fetch(url, options);
@@ -126,6 +127,8 @@ function renderStage(stage) {
   }
 
   const extra = node.querySelector("[data-extra]");
+  const uploadSlot = node.querySelector("[data-upload]");
+
   if (stage === "approve") {
     extra.innerHTML = `
       <label>
@@ -137,6 +140,10 @@ function renderStage(stage) {
         <textarea name="summary" rows="2" placeholder="Summary for the audit log"></textarea>
       </label>
     `;
+    if (uploadSlot) {
+      uploadSlot.hidden = true;
+      uploadSlot.innerHTML = "";
+    }
   } else if (stage === "review") {
     extra.innerHTML = `
       <label>
@@ -148,6 +155,10 @@ function renderStage(stage) {
         </select>
       </label>
     `;
+    if (uploadSlot) {
+      uploadSlot.hidden = true;
+      uploadSlot.innerHTML = "";
+    }
   } else if (stage === "export") {
     extra.innerHTML = `
       <label>
@@ -155,8 +166,21 @@ function renderStage(stage) {
         <input name="output_dir" type="text" placeholder="data/exports" />
       </label>
     `;
+    if (uploadSlot) {
+      uploadSlot.hidden = true;
+      uploadSlot.innerHTML = "";
+    }
+  } else if (stage === "ingest") {
+    extra.innerHTML = `
+      <p class="hint">Upload new documents to kick off ingestion or select an existing file to inspect its metadata.</p>
+    `;
+    setupIngestUpload(uploadSlot);
   } else {
     extra.innerHTML = "";
+    if (uploadSlot) {
+      uploadSlot.hidden = true;
+      uploadSlot.innerHTML = "";
+    }
   }
 
   const form = node.querySelector("[data-form]");
@@ -203,6 +227,136 @@ function renderStage(stage) {
   showStageDetails(statusContainer, lookupDocumentStage(initialDoc, stage));
 
   stageContainer.replaceChildren(node);
+}
+
+function setupIngestUpload(container) {
+  if (!container) return;
+
+  container.hidden = false;
+  container.innerHTML = "";
+
+  const dropzone = document.createElement("div");
+  dropzone.className = "upload-dropzone";
+  dropzone.dataset.dropzone = "";
+
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.multiple = true;
+  fileInput.className = "upload-input";
+  fileInput.dataset.fileInput = "";
+  dropzone.append(fileInput);
+
+  const title = document.createElement("p");
+  title.className = "upload-title";
+  title.innerHTML = "<strong>Upload documents</strong>";
+  dropzone.append(title);
+
+  const subtitle = document.createElement("p");
+  subtitle.className = "upload-subtitle";
+  subtitle.append("Drag and drop files here or ");
+
+  const browseButton = document.createElement("button");
+  browseButton.type = "button";
+  browseButton.className = "upload-browse";
+  browseButton.textContent = "browse";
+  subtitle.append(browseButton, " to select files from your computer.");
+  dropzone.append(subtitle);
+
+  const status = document.createElement("p");
+  status.className = "upload-status hint";
+  status.dataset.state = "idle";
+  status.setAttribute("role", "status");
+
+  container.append(dropzone, status);
+
+  const setStatus = (message, state = "idle") => {
+    status.textContent = message;
+    status.dataset.state = state;
+    dropzone.dataset.state = state;
+  };
+
+  const notice = stageNotices.ingest;
+  if (notice) {
+    setStatus(notice.message, notice.state || "idle");
+    delete stageNotices.ingest;
+  } else {
+    setStatus("Drag and drop files or browse to upload new documents.");
+  }
+
+  const preventDefaults = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const resetDrag = () => {
+    dropzone.classList.remove("is-dragover");
+  };
+
+  const handleFiles = async (fileList) => {
+    const files = Array.from(fileList || []).filter((file) => file && file.size);
+    if (!files.length) {
+      setStatus("No files selected.", "error");
+      return;
+    }
+
+    const countLabel = files.length === 1 ? "file" : "files";
+    setStatus(`Uploading ${files.length} ${countLabel}…`, "uploading");
+
+    const formData = new FormData();
+    files.forEach((file) => formData.append("files", file));
+
+    try {
+      const response = await fetchJSON("/ingestion/documents", {
+        method: "POST",
+        body: formData,
+      });
+      stageNotices.ingest = {
+        state: "success",
+        message: response.message || `Uploaded ${files.length} ${countLabel}.`,
+      };
+      setStatus(stageNotices.ingest.message, "success");
+      await loadDashboard();
+    } catch (error) {
+      const message = error.message || "Upload failed.";
+      stageNotices.ingest = { state: "error", message };
+      setStatus(message, "error");
+    } finally {
+      resetDrag();
+      fileInput.value = "";
+    }
+  };
+
+  ["dragenter", "dragover"].forEach((eventName) => {
+    dropzone.addEventListener(eventName, (event) => {
+      preventDefaults(event);
+      dropzone.classList.add("is-dragover");
+    });
+  });
+
+  ["dragleave", "dragend", "drop"].forEach((eventName) => {
+    dropzone.addEventListener(eventName, (event) => {
+      preventDefaults(event);
+      if (eventName === "drop") return;
+      resetDrag();
+    });
+  });
+
+  dropzone.addEventListener("drop", (event) => {
+    preventDefaults(event);
+    resetDrag();
+    handleFiles(event.dataTransfer?.files);
+  });
+
+  browseButton.addEventListener("click", () => fileInput.click());
+
+  dropzone.addEventListener("click", (event) => {
+    if (event.target.closest("button")) return;
+    fileInput.click();
+  });
+
+  fileInput.addEventListener("change", () => {
+    handleFiles(fileInput.files);
+  });
 }
 
 function lookupDocumentStage(documentId, stage) {
