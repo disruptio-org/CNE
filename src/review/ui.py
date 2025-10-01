@@ -28,13 +28,21 @@ def build_review_router(db_path: Path | str = Path("data/documents.db")) -> APIR
         if active_document_id is None and documents:
             active_document_id = documents[0]["document_id"]
         comparisons: List[Mapping[str, object]] = []
+        active_document_status: str | None = None
         if active_document_id is not None:
             comparisons = service.fetch_comparisons(active_document_id, status=active_status)
+            active_document = next(
+                (entry for entry in documents if entry.get("document_id") == active_document_id),
+                None,
+            )
+            if active_document:
+                active_document_status = str(active_document.get("document_status") or "")
         content = _render_review_page(
             documents=documents,
             comparisons=comparisons,
             active_document_id=active_document_id,
             active_status=active_status,
+            active_document_status=active_document_status,
         )
         return HTMLResponse(content=content)
 
@@ -70,7 +78,31 @@ def build_review_router(db_path: Path | str = Path("data/documents.db")) -> APIR
         document_id: int = Form(...),
         status: str | None = Form("dispute"),
     ) -> RedirectResponse:
-        service.bulk_accept_agreements(document_id=document_id)
+        try:
+            service.bulk_accept_agreements(document_id=document_id)
+        except ValueError as exc:  # pragma: no cover - handled by FastAPI runtime
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        redirect_url = f"/review?document_id={document_id}"
+        if status:
+            redirect_url += f"&status={status}"
+        return RedirectResponse(url=redirect_url, status_code=303)
+
+    @router.post("/review/approve")
+    def approve_document(
+        document_id: int = Form(...),
+        approver_id: str = Form(...),
+        summary: str | None = Form(None),
+        status: str | None = Form("dispute"),
+    ) -> RedirectResponse:
+        try:
+            service.approve_document(
+                document_id=document_id,
+                approver_id=approver_id,
+                summary=summary,
+            )
+        except ValueError as exc:  # pragma: no cover - handled by FastAPI runtime
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
         redirect_url = f"/review?document_id={document_id}"
         if status:
             redirect_url += f"&status={status}"
@@ -90,10 +122,17 @@ def _render_review_page(
     comparisons: Sequence[Mapping[str, object]],
     active_document_id: int | None,
     active_status: str | None,
+    active_document_status: str | None,
 ) -> str:
     doc_options = _build_document_options(documents, active_document_id)
     status_options = _build_status_options(active_status)
-    rows = _build_comparison_rows(comparisons, active_document_id, active_status)
+    is_editable = (active_document_status or "").upper() != "APPROVED"
+    rows = _build_comparison_rows(
+        comparisons,
+        active_document_id,
+        active_status,
+        editable=is_editable,
+    )
 
     return f"""
     <!DOCTYPE html>
@@ -116,9 +155,14 @@ def _render_review_page(
           .decision-form {{ display: flex; flex-direction: column; gap: 0.3rem; }}
           .decision-form textarea {{ min-height: 3rem; }}
           .snippet-panel pre {{ background: #212121; color: #fafafa; padding: 1rem; border-radius: 4px; overflow-x: auto; max-height: 18rem; }}
-          .actions {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; gap: 1rem; }}
-          .actions form {{ margin: 0; }}
+          .actions {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; gap: 1rem; flex-wrap: wrap; }}
+          .actions form {{ margin: 0; display: flex; gap: 0.5rem; align-items: flex-end; flex-wrap: wrap; }}
           .document-summary ul {{ margin: 0; padding-left: 1.2rem; }}
+          .status-pill {{ display: inline-block; padding: 0.1rem 0.6rem; border-radius: 12px; background: #eceff1; font-size: 0.85rem; }}
+          .status-pill.approved {{ background: #a5d6a7; }}
+          .decision-readonly {{ background: #fafafa; border: 1px solid #e0e0e0; padding: 0.75rem; border-radius: 4px; }}
+          .decision-readonly strong {{ display: block; margin-bottom: 0.3rem; }}
+          .approval-notice {{ font-style: italic; color: #5d4037; }}
         </style>
       </head>
       <body>
@@ -136,7 +180,12 @@ def _render_review_page(
               <strong>Documents with disputes:</strong>
               <span>{len(documents)}</span>
             </div>
-            { _render_bulk_accept(active_document_id, active_status) }
+            <div>
+              <strong>Status:</strong>
+              { _render_status_indicator(active_document_status) }
+            </div>
+            { _render_bulk_accept(active_document_id, active_status, is_editable) }
+            { _render_approval_controls(active_document_id, active_status, active_document_status, is_editable) }
           </div>
           <div class=\"document-summary\">
             {_render_document_list(documents, active_document_id)}
@@ -228,6 +277,8 @@ def _build_comparison_rows(
     comparisons: Sequence[Mapping[str, object]],
     active_document_id: int | None,
     active_status: str | None,
+    *,
+    editable: bool,
 ) -> str:
     if not comparisons:
         return '<tr><td colspan="4">No comparison rows found for the selected filters.</td></tr>'
@@ -245,6 +296,12 @@ def _build_comparison_rows(
         comment = entry.get("comment") or ""
         reviewer = entry.get("reviewer") or ""
         status_badge = html.escape(status.replace("_", " ").title())
+        decision_html = _render_decision_controls(
+            entry,
+            active_document_id,
+            active_status,
+            editable=editable,
+        )
         rows.append(
             f"""
             <tr class=\"status-{status}\">
@@ -260,26 +317,54 @@ def _build_comparison_rows(
                 <div><strong>{nome_b}</strong></div>
                 <div>{partido_b}</div>
               </td>
-              <td>
-                <form method=\"post\" action=\"/review/decision\" class=\"decision-form\">
-                  <input type=\"hidden\" name=\"comparison_id\" value=\"{comparison_id}\" />
-                  <input type=\"hidden\" name=\"document_id\" value=\"{active_document_id or ''}\" />
-                  <input type=\"hidden\" name=\"status\" value=\"{active_status or ''}\" />
-                  <label>Preferred source</label>
-                  {_render_source_selector(selected_source)}
-                  <label>Final value</label>
-                  <input type=\"text\" name=\"final_value\" value=\"{html.escape(str(final_value))}\" />
-                  <label>Reviewer</label>
-                  <input type=\"text\" name=\"reviewer\" value=\"{html.escape(str(reviewer))}\" placeholder=\"Your name\" />
-                  <label>Comment</label>
-                  <textarea name=\"comment\" placeholder=\"Notes for this decision\">{html.escape(str(comment))}</textarea>
-                  <button type=\"submit\">Save decision</button>
-                </form>
-              </td>
+              <td>{decision_html}</td>
             </tr>
             """
         )
     return "".join(rows)
+
+
+def _render_decision_controls(
+    entry: Mapping[str, object],
+    active_document_id: int | None,
+    active_status: str | None,
+    *,
+    editable: bool,
+) -> str:
+    comparison_id = entry.get("comparison_id")
+    selected_source = entry.get("selected_source") or ""
+    final_value = entry.get("final_value") or entry.get("nome_a") or entry.get("nome_b") or ""
+    reviewer = entry.get("reviewer") or ""
+    comment = entry.get("comment") or ""
+
+    if not editable:
+        summary_lines = [
+            f"<strong>Selected source:</strong> {html.escape(str(selected_source) or '—')}",
+            f"<strong>Final value:</strong> {html.escape(str(final_value) or '—')}",
+        ]
+        if reviewer:
+            summary_lines.append(f"<strong>Reviewer:</strong> {html.escape(str(reviewer))}")
+        if comment:
+            summary_lines.append(f"<strong>Comment:</strong> {html.escape(str(comment))}")
+        summary = "<br />".join(summary_lines) or "No decision recorded."
+        return f"<div class=\"decision-readonly\">{summary}</div>"
+
+    return (
+        "<form method=\"post\" action=\"/review/decision\" class=\"decision-form\">"
+        f"<input type=\"hidden\" name=\"comparison_id\" value=\"{comparison_id}\" />"
+        f"<input type=\"hidden\" name=\"document_id\" value=\"{active_document_id or ''}\" />"
+        f"<input type=\"hidden\" name=\"status\" value=\"{active_status or ''}\" />"
+        "<label>Preferred source</label>"
+        f"{_render_source_selector(selected_source)}"
+        "<label>Final value</label>"
+        f"<input type=\"text\" name=\"final_value\" value=\"{html.escape(str(final_value))}\" />"
+        "<label>Reviewer</label>"
+        f"<input type=\"text\" name=\"reviewer\" value=\"{html.escape(str(reviewer))}\" placeholder=\"Your name\" />"
+        "<label>Comment</label>"
+        f"<textarea name=\"comment\" placeholder=\"Notes for this decision\">{html.escape(str(comment))}</textarea>"
+        "<button type=\"submit\">Save decision</button>"
+        "</form>"
+    )
 
 
 def _render_source_selector(selected_source: str | None) -> str:
@@ -298,9 +383,15 @@ def _render_source_selector(selected_source: str | None) -> str:
     return "".join(rendered)
 
 
-def _render_bulk_accept(active_document_id: int | None, active_status: str | None) -> str:
+def _render_bulk_accept(
+    active_document_id: int | None,
+    active_status: str | None,
+    editable: bool,
+) -> str:
     if active_document_id is None:
         return ""
+    if not editable:
+        return "<div class=\"approval-notice\">Approved documents cannot accept agreements.</div>"
     status_value = active_status or "dispute"
     return (
         "<form method=\"post\" action=\"/review/bulk_accept\">"
@@ -311,6 +402,39 @@ def _render_bulk_accept(active_document_id: int | None, active_status: str | Non
     )
 
 
+def _render_approval_controls(
+    active_document_id: int | None,
+    active_status: str | None,
+    active_document_status: str | None,
+    editable: bool,
+) -> str:
+    if active_document_id is None:
+        return ""
+    if not editable:
+        return "<div class=\"approval-notice\">Document is approved. Edits are locked.</div>"
+    status_value = active_status or "dispute"
+    return (
+        "<form method=\"post\" action=\"/review/approve\" class=\"decision-form\">"
+        f"<input type=\"hidden\" name=\"document_id\" value=\"{active_document_id}\" />"
+        f"<input type=\"hidden\" name=\"status\" value=\"{status_value}\" />"
+        "<label>Approver</label>"
+        "<input type=\"text\" name=\"approver_id\" placeholder=\"Approver name\" required />"
+        "<label>Summary</label>"
+        "<input type=\"text\" name=\"summary\" placeholder=\"Approval notes\" />"
+        "<button type=\"submit\">Approve document</button>"
+        "</form>"
+    )
+
+
+def _render_status_indicator(active_document_status: str | None) -> str:
+    if not active_document_status:
+        return "<span class=\"status-pill\">Unknown</span>"
+    status_upper = active_document_status.upper()
+    pill_class = "status-pill"
+    if status_upper == "APPROVED":
+        pill_class += " approved"
+    label = html.escape(active_document_status.replace("_", " ").title())
+    return f"<span class=\"{pill_class}\">{label}</span>"
 def _render_document_list(
     documents: Sequence[Mapping[str, object]],
     active_document_id: int | None,
