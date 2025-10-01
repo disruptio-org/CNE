@@ -396,4 +396,19 @@ class CandidateComparator:
                 )
                 """,
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS review_decisions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    comparison_id INTEGER NOT NULL UNIQUE,
+                    document_id INTEGER,
+                    reviewer TEXT,
+                    selected_source TEXT NOT NULL,
+                    final_value TEXT,
+                    comment TEXT,
+                    decided_at TEXT NOT NULL,
+                    FOREIGN KEY (comparison_id) REFERENCES candidate_comparisons(id)
+                )
+                """,
+            )
             conn.commit()
