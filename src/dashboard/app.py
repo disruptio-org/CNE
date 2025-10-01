@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,8 @@ from operators.operator_b import OperatorB
 from review.service import ReviewService
 
 from .progress import fetch_document_progress
+
+LOGGER = logging.getLogger(__name__)
 
 FRONTEND_PREFIX = "/app"
 
@@ -49,75 +52,81 @@ class PipelineOrchestrator:
     # ------------------------------------------------------------------
     def run_stage(self, stage: str, document_id: int, payload: StagePayload) -> Dict[str, Any]:
         stage = stage.lower()
-        if stage == "ingest":
-            record = self._get_document(document_id)
-            return {"message": "Ingestion metadata refreshed.", "details": self._document_details(record)}
-        if stage == "ocr":
-            record = self.ocr.run_for_document(document_id)
-            return {"message": "OCR pipeline executed.", "details": self._document_details(record)}
-        if stage == "operator_a":
-            rows = self._run_operator(self.operator_a, document_id)
-            return {"message": f"Operator A stored {len(rows)} rows.", "details": self._simple_metric("Rows", len(rows))}
-        if stage == "operator_b":
-            rows = self._run_operator(self.operator_b, document_id)
-            return {"message": f"Operator B stored {len(rows)} rows.", "details": self._simple_metric("Rows", len(rows))}
-        if stage == "match":
-            comparisons = self._run_comparator(document_id)
-            return {
-                "message": f"{len(comparisons)} comparison rows generated.",
-                "details": self._simple_metric("Comparisons", len(comparisons)),
-            }
-        if stage == "review":
-            status_filter = payload.status or None
-            comparisons = self.review.fetch_comparisons(document_id, status=status_filter)
-            metrics = self._simple_metric(
-                "Rows fetched",
-                len(comparisons),
-                description="Rows available for reviewer inspection.",
+        try:
+            if stage == "ingest":
+                record = self._get_document(document_id)
+                return {"message": "Ingestion metadata refreshed.", "details": self._document_details(record)}
+            if stage == "ocr":
+                record = self.ocr.run_for_document(document_id)
+                return {"message": "OCR pipeline executed.", "details": self._document_details(record)}
+            if stage == "operator_a":
+                rows = self._run_operator(self.operator_a, document_id)
+                return {"message": f"Operator A stored {len(rows)} rows.", "details": self._simple_metric("Rows", len(rows))}
+            if stage == "operator_b":
+                rows = self._run_operator(self.operator_b, document_id)
+                return {"message": f"Operator B stored {len(rows)} rows.", "details": self._simple_metric("Rows", len(rows))}
+            if stage == "match":
+                comparisons = self._run_comparator(document_id)
+                return {
+                    "message": f"{len(comparisons)} comparison rows generated.",
+                    "details": self._simple_metric("Comparisons", len(comparisons)),
+                }
+            if stage == "review":
+                status_filter = payload.status or None
+                comparisons = self.review.fetch_comparisons(document_id, status=status_filter)
+                metrics = self._simple_metric(
+                    "Rows fetched",
+                    len(comparisons),
+                    description="Rows available for reviewer inspection.",
+                )
+                return {
+                    "message": f"Fetched {len(comparisons)} comparison rows for review.",
+                    "details": metrics,
+                }
+            if stage == "approve":
+                approver = (payload.approver_id or "dashboard").strip()
+                if not approver:
+                    raise ValueError("An approver identifier is required.")
+                self.review.approve_document(document_id=document_id, approver_id=approver, summary=payload.summary)
+                return {
+                    "message": f"Document {document_id} marked as approved.",
+                    "details": self._simple_metric("Approver", approver),
+                }
+            if stage == "export":
+                exporter = CsvExporter(db_path=self.db_path, output_dir=payload.output_dir)
+                result = exporter.export()
+                self._record_export_event(document_id)
+                stats = result.stats
+                mtime = datetime.fromtimestamp(result.csv_path.stat().st_mtime, timezone.utc).isoformat()
+                metrics = {
+                    "updated_at": mtime,
+                    "metrics": [
+                        {
+                            "label": "CSV path",
+                            "value": str(result.csv_path),
+                            "state": "completed",
+                        },
+                        {
+                            "label": "QA report",
+                            "value": str(result.qa_path),
+                            "state": "completed",
+                        },
+                        {
+                            "label": "Rows exported",
+                            "value": stats.get("rows", 0),
+                            "state": "completed" if stats.get("rows") else "pending",
+                        },
+                    ],
+                }
+                return {
+                    "message": "Export bundle generated successfully.",
+                    "details": metrics,
+                }
+        except (FileNotFoundError, OSError, RuntimeError) as exc:
+            LOGGER.exception(
+                "Pipeline stage %s failed for document %s: %s", stage, document_id, exc
             )
-            return {
-                "message": f"Fetched {len(comparisons)} comparison rows for review.",
-                "details": metrics,
-            }
-        if stage == "approve":
-            approver = (payload.approver_id or "dashboard").strip()
-            if not approver:
-                raise ValueError("An approver identifier is required.")
-            self.review.approve_document(document_id=document_id, approver_id=approver, summary=payload.summary)
-            return {
-                "message": f"Document {document_id} marked as approved.",
-                "details": self._simple_metric("Approver", approver),
-            }
-        if stage == "export":
-            exporter = CsvExporter(db_path=self.db_path, output_dir=payload.output_dir)
-            result = exporter.export()
-            self._record_export_event(document_id)
-            stats = result.stats
-            mtime = datetime.fromtimestamp(result.csv_path.stat().st_mtime, timezone.utc).isoformat()
-            metrics = {
-                "updated_at": mtime,
-                "metrics": [
-                    {
-                        "label": "CSV path",
-                        "value": str(result.csv_path),
-                        "state": "completed",
-                    },
-                    {
-                        "label": "QA report",
-                        "value": str(result.qa_path),
-                        "state": "completed",
-                    },
-                    {
-                        "label": "Rows exported",
-                        "value": stats.get("rows", 0),
-                        "state": "completed" if stats.get("rows") else "pending",
-                    },
-                ],
-            }
-            return {
-                "message": "Export bundle generated successfully.",
-                "details": metrics,
-            }
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
         raise ValueError(f"Unsupported stage {stage!r}.")
 
     # ------------------------------------------------------------------
