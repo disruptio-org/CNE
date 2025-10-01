@@ -14,6 +14,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, List, Sequence
@@ -122,8 +123,16 @@ class OcrPipeline:
                 artefact.unlink()
 
         started_at = self._timestamp()
-        self._run_tesseract(source, base_output)
-        self._run_tesseract(source, base_output, ["pdf"])
+        with tempfile.TemporaryDirectory(prefix="ocr_pages_", dir=self.ocr_output_dir) as tmp_dir:
+            page_dir = Path(tmp_dir)
+            page_images = self._render_pdf_to_images(source, page_dir)
+            if not page_images:
+                raise RuntimeError(
+                    f"No rasterised pages produced from scanned PDF {record.file_name!r}."
+                )
+
+            self._run_tesseract(page_images, base_output)
+            self._run_tesseract(page_images, base_output, ["pdf"])
         completed_at = self._timestamp()
 
         if not text_output.exists():
@@ -212,8 +221,20 @@ class OcrPipeline:
             return None
         return self._row_to_record(row)
 
-    def _run_tesseract(self, input_path: Path, output_base: Path, extra_args: Sequence[str] | None = None) -> None:
-        command = [self.tesseract_cmd, str(input_path), str(output_base)]
+    def _run_tesseract(
+        self,
+        input_paths: Sequence[Path] | Path,
+        output_base: Path,
+        extra_args: Sequence[str] | None = None,
+    ) -> None:
+        if isinstance(input_paths, Path):
+            inputs = [input_paths]
+        else:
+            inputs = list(input_paths)
+        if not inputs:
+            raise RuntimeError("No input images provided to Tesseract.")
+
+        command = [self.tesseract_cmd, *map(str, inputs), str(output_base)]
         if extra_args:
             command.extend(extra_args)
         LOGGER.debug("Running tesseract command: %s", " ".join(command))
@@ -222,9 +243,36 @@ class OcrPipeline:
         except FileNotFoundError as exc:  # pragma: no cover - environment dependent
             raise RuntimeError("Tesseract binary not found. Ensure it is installed and on PATH.") from exc
         if result.returncode != 0:
+            sources = ", ".join(Path(path).name for path in inputs)
             raise RuntimeError(
-                f"Tesseract failed for {input_path.name}: {result.stderr.strip() or result.stdout.strip()}"
+                f"Tesseract failed for {sources}: {result.stderr.strip() or result.stdout.strip()}"
             )
+
+    def _render_pdf_to_images(self, source: Path, destination: Path) -> List[Path]:
+        try:  # pragma: no cover - optional dependency
+            from pdf2image import convert_from_path
+        except Exception as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError(
+                "The pdf2image package is required to process scanned PDFs."
+            ) from exc
+
+        try:
+            images = convert_from_path(str(source))
+        except Exception as exc:  # pragma: no cover - depends on local tooling
+            raise RuntimeError(f"Failed to rasterise scanned PDF {source.name}: {exc}") from exc
+
+        rendered_pages: List[Path] = []
+        for index, image in enumerate(images, start=1):
+            page_path = destination / f"{source.stem}_page_{index:04d}.png"
+            try:
+                image.save(page_path, format="PNG")
+            except Exception as exc:  # pragma: no cover - pillow optional
+                raise RuntimeError(
+                    f"Failed to write rasterised page {index} for {source.name}: {exc}"
+                ) from exc
+            rendered_pages.append(page_path)
+
+        return rendered_pages
 
     def _row_to_record(self, row: sqlite3.Row) -> DocumentRecord:
         return DocumentRecord(
