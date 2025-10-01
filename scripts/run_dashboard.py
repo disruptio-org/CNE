@@ -15,16 +15,11 @@ def main() -> None:
     if str(src_path) not in sys.path:
         sys.path.insert(0, str(src_path))
 
-    uvicorn.main(
-        [
-            "uvicorn",
-            "src.dashboard.app:create_app",
-            "--factory",
-            "--host",
-            "0.0.0.0",
-            "--port",
-            "8000",
-        ]
+    uvicorn.run(
+        "src.dashboard.app:create_app",
+        host="0.0.0.0",
+        port=8000,
+        factory=True,
     )
 
 
