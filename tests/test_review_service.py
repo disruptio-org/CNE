@@ -161,3 +161,9 @@ def test_review_service_workflow(tmp_path: Path) -> None:
 
     snippet = service.get_document_snippet(1)
     assert "Primeira linha" in snippet["snippet"]
+
+    csv_path, qa_path, stats = service.export_approved_data(output_dir=tmp_path / "exports")
+    assert csv_path.exists()
+    assert qa_path.exists()
+    assert stats["documents"] == 1
+    assert stats["rows"] >= 1

@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from exporter import CsvExporter
+
 _ALLOWED_SOURCES = {"operator_a", "operator_b", "manual", "agreement"}
 
 
@@ -289,6 +291,21 @@ class ReviewService:
                 (document_id, approver_id.strip(), summary, approval_time),
             )
             conn.commit()
+
+    # ------------------------------------------------------------------
+    # Export helpers
+    # ------------------------------------------------------------------
+    def export_approved_data(
+        self,
+        *,
+        output_dir: Path | str | None = None,
+    ) -> tuple[Path, Path, Dict[str, object]]:
+        """Generate the approved dataset export and return artefact paths."""
+
+        export_dir = output_dir or (self.db_path.parent / "exports")
+        exporter = CsvExporter(db_path=self.db_path, output_dir=export_dir)
+        result = exporter.export()
+        return result.csv_path, result.qa_path, dict(result.stats)
 
     # ------------------------------------------------------------------
     # Document helpers
