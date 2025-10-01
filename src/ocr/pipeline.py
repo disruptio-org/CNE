@@ -130,6 +130,9 @@ class OcrPipeline:
         if not pdf_output.exists():
             raise RuntimeError(f"Tesseract did not produce expected searchable PDF for {record.file_name!r}.")
 
+        text_store_path = self._normalise_artifact_path(text_output)
+        pdf_store_path = self._normalise_artifact_path(pdf_output)
+
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute(
@@ -144,8 +147,8 @@ class OcrPipeline:
                 WHERE id = ?
                 """,
                 (
-                    str(text_output),
-                    str(pdf_output),
+                    str(text_store_path),
+                    str(pdf_store_path),
                     started_at,
                     completed_at,
                     DocumentStatus.OCR_DONE.value,
@@ -191,6 +194,20 @@ class OcrPipeline:
         raise FileNotFoundError(
             f"Original upload for document {record.id} ({record.file_name!r}) is missing from {self.upload_dir}."
         )
+
+    def _normalise_artifact_path(self, artefact: Path) -> Path:
+        """Return a stable representation for persisted OCR artefact paths."""
+
+        base_dir = self.db_path.parent
+        if base_dir:
+            try:
+                return artefact.relative_to(base_dir)
+            except ValueError:
+                try:
+                    return artefact.resolve().relative_to(base_dir.resolve())
+                except ValueError:
+                    pass
+        return artefact.resolve()
 
     def _fetch_document(self, document_id: int) -> DocumentRecord | None:
         query = """
