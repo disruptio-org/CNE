@@ -10,6 +10,8 @@ updated to reflect processing progress.
 from __future__ import annotations
 
 import logging
+import re
+import shutil
 import sqlite3
 import subprocess
 from datetime import datetime, timezone
@@ -42,14 +44,10 @@ class OcrPipeline:
 
         processed: List[DocumentRecord] = []
         for record in self._pending_pdf_documents():
-            if record.detected_type == DocumentType.PDF_SEARCHABLE:
-                LOGGER.info(
-                    "Skipping OCR for %s (%s): already searchable",
-                    record.file_name,
-                    record.file_hash,
-                )
-                continue
-            processed.append(self._process_scanned_pdf(record))
+            if record.detected_type == DocumentType.PDF_SCANNED:
+                processed.append(self._process_scanned_pdf(record))
+            elif record.detected_type == DocumentType.PDF_SEARCHABLE:
+                processed.append(self._process_searchable_pdf(record))
         return processed
 
     def run_for_document(self, document_id: int) -> DocumentRecord:
@@ -58,14 +56,17 @@ class OcrPipeline:
         record = self._fetch_document(document_id)
         if record is None:
             raise ValueError(f"Document {document_id} not found in ingestion database.")
+        if record.detected_type == DocumentType.PDF_SCANNED:
+            return self._process_scanned_pdf(record)
         if record.detected_type == DocumentType.PDF_SEARCHABLE:
-            LOGGER.info(
-                "Skipping OCR for %s (%s): already searchable",
-                record.file_name,
-                record.file_hash,
-            )
-            return record
-        return self._process_scanned_pdf(record)
+            return self._process_searchable_pdf(record)
+        LOGGER.debug(
+            "Skipping OCR for %s (%s): unsupported type %s",
+            record.file_name,
+            record.file_hash,
+            record.detected_type,
+        )
+        return record
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -130,58 +131,35 @@ class OcrPipeline:
         if not pdf_output.exists():
             raise RuntimeError(f"Tesseract did not produce expected searchable PDF for {record.file_name!r}.")
 
-        text_store_path = self._normalise_artifact_path(text_output)
-        pdf_store_path = self._normalise_artifact_path(pdf_output)
-
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            conn.execute(
-                """
-                UPDATE documents
-                SET
-                    ocr_text_path = ?,
-                    ocr_pdf_path = ?,
-                    ocr_started_at = ?,
-                    ocr_completed_at = ?,
-                    status = ?
-                WHERE id = ?
-                """,
-                (
-                    str(text_store_path),
-                    str(pdf_store_path),
-                    started_at,
-                    completed_at,
-                    DocumentStatus.OCR_DONE.value,
-                    record.id,
-                ),
-            )
-            conn.commit()
-            cursor = conn.execute(
-                """
-                SELECT
-                    id,
-                    file_name,
-                    file_hash,
-                    file_size,
-                    detected_type,
-                    status,
-                    created_at,
-                    ocr_pdf_path,
-                    ocr_text_path,
-                    ocr_started_at,
-                    ocr_completed_at
-                FROM documents
-                WHERE id = ?
-                """,
-                (record.id,),
-            )
-            row = cursor.fetchone()
-
-        if row is None:  # pragma: no cover - defensive guard
-            raise RuntimeError("Failed to refresh document metadata after OCR.")
-
         LOGGER.info("Completed OCR for %s (%s)", record.file_name, record.file_hash)
-        return self._row_to_record(row)
+        return self._finalise_document(record.id, text_output, pdf_output, started_at, completed_at)
+
+    def _process_searchable_pdf(self, record: DocumentRecord) -> DocumentRecord:
+        if record.detected_type != DocumentType.PDF_SEARCHABLE:
+            LOGGER.debug(
+                "Skipping OCR for %s (%s): not a searchable PDF",
+                record.file_name,
+                record.file_hash,
+            )
+            return record
+
+        source = self._resolve_source_path(record)
+        base_output = self.ocr_output_dir / record.file_hash
+        text_output = base_output.with_suffix(".txt")
+        pdf_output = base_output.with_suffix(".pdf")
+
+        for artefact in (text_output, pdf_output):
+            if artefact.exists():
+                artefact.unlink()
+
+        started_at = self._timestamp()
+        text_content = self._extract_pdf_text(source)
+        text_output.write_text(text_content, encoding="utf-8")
+        shutil.copy2(source, pdf_output)
+        completed_at = self._timestamp()
+
+        LOGGER.info("Extracted text for %s (%s)", record.file_name, record.file_hash)
+        return self._finalise_document(record.id, text_output, pdf_output, started_at, completed_at)
 
     def _resolve_source_path(self, record: DocumentRecord) -> Path:
         suffix = Path(record.file_name).suffix.lower() or ".pdf"
@@ -266,6 +244,125 @@ class OcrPipeline:
     @staticmethod
     def _timestamp() -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    def _finalise_document(
+        self,
+        document_id: int,
+        text_output: Path,
+        pdf_output: Path,
+        started_at: str,
+        completed_at: str,
+    ) -> DocumentRecord:
+        text_store_path = self._normalise_artifact_path(text_output)
+        pdf_store_path = self._normalise_artifact_path(pdf_output)
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute(
+                """
+                UPDATE documents
+                SET
+                    ocr_text_path = ?,
+                    ocr_pdf_path = ?,
+                    ocr_started_at = ?,
+                    ocr_completed_at = ?,
+                    status = ?
+                WHERE id = ?
+                """,
+                (
+                    str(text_store_path),
+                    str(pdf_store_path),
+                    started_at,
+                    completed_at,
+                    DocumentStatus.OCR_DONE.value,
+                    document_id,
+                ),
+            )
+            conn.commit()
+            cursor = conn.execute(
+                """
+                SELECT
+                    id,
+                    file_name,
+                    file_hash,
+                    file_size,
+                    detected_type,
+                    status,
+                    created_at,
+                    ocr_pdf_path,
+                    ocr_text_path,
+                    ocr_started_at,
+                    ocr_completed_at
+                FROM documents
+                WHERE id = ?
+                """,
+                (document_id,),
+            )
+            row = cursor.fetchone()
+
+        if row is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("Failed to refresh document metadata after OCR.")
+
+        return self._row_to_record(row)
+
+    def _extract_pdf_text(self, source: Path) -> str:
+        """Extract the textual layer from a searchable PDF."""
+
+        extractors = [
+            self._extract_pdf_text_with_pypdf,
+            self._extract_pdf_text_with_basic_parser,
+        ]
+        for extractor in extractors:
+            try:
+                text = extractor(source)
+            except RuntimeError:
+                continue
+            if text:
+                return text
+        # If all strategies fail, still return an empty transcript file.
+        return ""
+
+    @staticmethod
+    def _extract_pdf_text_with_pypdf(source: Path) -> str:
+        try:  # pragma: no cover - optional dependency
+            from pypdf import PdfReader  # type: ignore
+        except Exception as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError("pypdf not available") from exc
+
+        reader = PdfReader(str(source))
+        chunks: List[str] = []
+        for page in reader.pages:
+            if hasattr(page, "extract_text"):
+                text = page.extract_text()  # type: ignore[attr-defined]
+            else:  # pragma: no cover - compatibility shim
+                text = page.extractText()  # type: ignore[attr-defined]
+            if text:
+                chunks.append(text)
+        return "\n".join(chunk.strip() for chunk in chunks if chunk).strip()
+
+    def _extract_pdf_text_with_basic_parser(self, source: Path) -> str:
+        raw = source.read_bytes()
+        text_segments: List[str] = []
+
+        # Handle "(text) Tj" operands
+        for match in re.finditer(rb"\((.*?)\)\s*T[jJ]", raw, re.DOTALL):
+            text_segments.append(self._decode_pdf_string(match.group(1)))
+
+        # Handle "[(text1)(text2)] TJ" operands
+        for match in re.finditer(rb"\[(.*?)\]\s*TJ", raw, re.DOTALL):
+            parts = re.findall(rb"\((.*?)\)", match.group(1), re.DOTALL)
+            for part in parts:
+                text_segments.append(self._decode_pdf_string(part))
+
+        cleaned = "\n".join(filter(None, (segment.strip() for segment in text_segments)))
+        if not cleaned:
+            raise RuntimeError("No text operands located in PDF stream.")
+        return cleaned
+
+    @staticmethod
+    def _decode_pdf_string(raw: bytes) -> str:
+        text = raw.replace(b"\\\\", b"\\").replace(b"\\(", b"(").replace(b"\\)", b")")
+        return text.decode("latin-1", errors="ignore")
 
 
 __all__ = ["OcrPipeline"]
