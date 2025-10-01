@@ -384,6 +384,33 @@ class IngestionService:
             ocr_completed_at=row["ocr_completed_at"],
         )
 
+    def get_document(self, document_id: int) -> DocumentRecord | None:
+        """Return a document record by its identifier."""
+
+        query = """
+            SELECT
+                id,
+                file_name,
+                file_hash,
+                file_size,
+                detected_type,
+                status,
+                created_at,
+                ocr_pdf_path,
+                ocr_text_path,
+                ocr_started_at,
+                ocr_completed_at
+            FROM documents
+            WHERE id = ?
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(query, (document_id,))
+            row = cursor.fetchone()
+        if row is None:
+            return None
+        return self._row_to_record(row)
+
 
 __all__ = [
     "DocumentRecord",

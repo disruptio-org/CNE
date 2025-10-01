@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="manifest" href="manifest.json" />
+    <link rel="stylesheet" href="styles.css" />
+    <title>CNE Processing Console</title>
+  </head>
+  <body>
+    <header class="app-header">
+      <h1>CNE Processing Console</h1>
+      <button id="refresh-dashboard" type="button" class="refresh-button">Refresh Dashboard</button>
+    </header>
+
+    <main>
+      <section id="dashboard" class="panel">
+        <header class="panel-header">
+          <h2>Document Pipeline Overview</h2>
+          <p class="hint">
+            Track per-stage progress and jump directly into the workflow.
+          </p>
+        </header>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Document</th>
+                <th>Status</th>
+                <th>Type</th>
+                <th>Progress</th>
+                <th>Stages</th>
+              </tr>
+            </thead>
+            <tbody id="dashboard-body">
+              <tr>
+                <td colspan="5" class="placeholder">No documents loaded yet.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <nav class="stage-nav" aria-label="Processing stages">
+        <button data-stage="ingest" class="active">Ingest</button>
+        <button data-stage="ocr">OCR</button>
+        <button data-stage="operator_a">Operator A</button>
+        <button data-stage="operator_b">Operator B</button>
+        <button data-stage="match">Match</button>
+        <button data-stage="review">Review</button>
+        <button data-stage="approve">Approve</button>
+        <button data-stage="export">Export</button>
+      </nav>
+
+      <section id="stage-container"></section>
+    </main>
+
+    <template id="stage-template">
+      <section class="panel stage-panel">
+        <header class="panel-header">
+          <h2 data-title></h2>
+          <p class="hint" data-description></p>
+        </header>
+        <form data-form class="stage-form">
+          <label>
+            <span>Select document</span>
+            <select name="document" data-document></select>
+          </label>
+          <div data-extra></div>
+          <div class="actions">
+            <button type="submit" class="primary">Run stage</button>
+            <button type="button" data-refresh>Reload status</button>
+          </div>
+        </form>
+        <output data-output></output>
+        <section class="stage-status" data-status></section>
+      </section>
+    </template>
+
+    <script src="app.js" type="module"></script>
+  </body>
+</html>

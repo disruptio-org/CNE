@@ -52,6 +52,21 @@ class OcrPipeline:
             processed.append(self._process_scanned_pdf(record))
         return processed
 
+    def run_for_document(self, document_id: int) -> DocumentRecord:
+        """Run OCR for a specific document if applicable."""
+
+        record = self._fetch_document(document_id)
+        if record is None:
+            raise ValueError(f"Document {document_id} not found in ingestion database.")
+        if record.detected_type == DocumentType.PDF_SEARCHABLE:
+            LOGGER.info(
+                "Skipping OCR for %s (%s): already searchable",
+                record.file_name,
+                record.file_hash,
+            )
+            return record
+        return self._process_scanned_pdf(record)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -176,6 +191,31 @@ class OcrPipeline:
         raise FileNotFoundError(
             f"Original upload for document {record.id} ({record.file_name!r}) is missing from {self.upload_dir}."
         )
+
+    def _fetch_document(self, document_id: int) -> DocumentRecord | None:
+        query = """
+            SELECT
+                id,
+                file_name,
+                file_hash,
+                file_size,
+                detected_type,
+                status,
+                created_at,
+                ocr_pdf_path,
+                ocr_text_path,
+                ocr_started_at,
+                ocr_completed_at
+            FROM documents
+            WHERE id = ?
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(query, (document_id,))
+            row = cursor.fetchone()
+        if row is None:
+            return None
+        return self._row_to_record(row)
 
     def _run_tesseract(self, input_path: Path, output_base: Path, extra_args: Sequence[str] | None = None) -> None:
         command = [self.tesseract_cmd, str(input_path), str(output_base)]
