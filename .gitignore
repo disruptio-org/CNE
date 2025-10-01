@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.sqlite3
+*.db
+.DS_Store
+
+# Uploaded data
+/data/uploads/*
+!/data/uploads/
+!/data/uploads/.gitkeep
+
+# Byte-compiled / compiled files
+*.pyo
