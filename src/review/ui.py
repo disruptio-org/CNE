@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import html
+import zipfile
 from pathlib import Path
 from typing import List, Mapping, Sequence
 
 from fastapi import APIRouter, Form, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
 from .service import ReviewService
 
@@ -108,6 +109,24 @@ def build_review_router(db_path: Path | str = Path("data/documents.db")) -> APIR
             redirect_url += f"&status={status}"
         return RedirectResponse(url=redirect_url, status_code=303)
 
+    @router.get("/review/export")
+    def export_bundle() -> FileResponse:
+        try:
+            csv_path, qa_path, _ = service.export_approved_data()
+        except ValueError as exc:  # pragma: no cover - handled via HTTPException
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        archive_path = csv_path.with_suffix(".zip")
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+            bundle.write(csv_path, arcname=csv_path.name)
+            bundle.write(qa_path, arcname=qa_path.name)
+
+        return FileResponse(
+            path=archive_path,
+            media_type="application/zip",
+            filename=archive_path.name,
+        )
+
     @router.get("/review/snippet/{document_id}")
     def document_snippet(document_id: int) -> JSONResponse:
         payload = service.get_document_snippet(document_id)
@@ -184,6 +203,7 @@ def _render_review_page(
               <strong>Status:</strong>
               { _render_status_indicator(active_document_status) }
             </div>
+            { _render_export_button() }
             { _render_bulk_accept(active_document_id, active_status, is_editable) }
             { _render_approval_controls(active_document_id, active_status, active_document_status, is_editable) }
           </div>
@@ -383,6 +403,14 @@ def _render_source_selector(selected_source: str | None) -> str:
     return "".join(rendered)
 
 
+def _render_export_button() -> str:
+    return (
+        "<form method=\"get\" action=\"/review/export\">"
+        "<button type=\"submit\">Download CSV &amp; QA</button>"
+        "</form>"
+    )
+
+
 def _render_bulk_accept(
     active_document_id: int | None,
     active_status: str | None,
@@ -435,6 +463,8 @@ def _render_status_indicator(active_document_status: str | None) -> str:
         pill_class += " approved"
     label = html.escape(active_document_status.replace("_", " ").title())
     return f"<span class=\"{pill_class}\">{label}</span>"
+
+
 def _render_document_list(
     documents: Sequence[Mapping[str, object]],
     active_document_id: int | None,
