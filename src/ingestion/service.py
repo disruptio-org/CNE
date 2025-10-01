@@ -43,6 +43,7 @@ class DocumentStatus(str, Enum):
     NEW = "NEW"
     INGESTED = "INGESTED"
     PROCESSED = "PROCESSED"
+    OCR_DONE = "OCR_DONE"
     FAILED = "FAILED"
 
 
@@ -67,6 +68,10 @@ class DocumentRecord:
     detected_type: DocumentType
     status: DocumentStatus
     created_at: str
+    ocr_pdf_path: Optional[str] = None
+    ocr_text_path: Optional[str] = None
+    ocr_started_at: Optional[str] = None
+    ocr_completed_at: Optional[str] = None
 
     def dict(self) -> Dict[str, object]:
         """Return a JSON-serialisable representation of the record."""
@@ -160,7 +165,22 @@ class IngestionService:
             )
             conn.commit()
             cursor.execute(
-                "SELECT id, file_name, file_hash, file_size, detected_type, status, created_at FROM documents WHERE file_hash = ?",
+                """
+                SELECT
+                    id,
+                    file_name,
+                    file_hash,
+                    file_size,
+                    detected_type,
+                    status,
+                    created_at,
+                    ocr_pdf_path,
+                    ocr_text_path,
+                    ocr_started_at,
+                    ocr_completed_at
+                FROM documents
+                WHERE file_hash = ?
+                """,
                 (file_hash,),
             )
             row = cursor.fetchone()
@@ -173,7 +193,10 @@ class IngestionService:
     def list_documents(self, statuses: Optional[Iterable[DocumentStatus]] = None) -> List[DocumentRecord]:
         """Retrieve documents filtered by status (or all documents)."""
 
-        query = "SELECT id, file_name, file_hash, file_size, detected_type, status, created_at FROM documents"
+        query = (
+            "SELECT id, file_name, file_hash, file_size, detected_type, status, created_at, "
+            "ocr_pdf_path, ocr_text_path, ocr_started_at, ocr_completed_at FROM documents"
+        )
         params: List[object] = []
         if statuses:
             status_list = [status for status in statuses]
@@ -258,10 +281,27 @@ class IngestionService:
                     file_size INTEGER NOT NULL,
                     detected_type TEXT NOT NULL,
                     status TEXT NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    ocr_pdf_path TEXT,
+                    ocr_text_path TEXT,
+                    ocr_started_at TEXT,
+                    ocr_completed_at TEXT
                 )
                 """
             )
+            existing_columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(documents)")
+            }
+            migrations = {
+                "ocr_pdf_path": "ALTER TABLE documents ADD COLUMN ocr_pdf_path TEXT",
+                "ocr_text_path": "ALTER TABLE documents ADD COLUMN ocr_text_path TEXT",
+                "ocr_started_at": "ALTER TABLE documents ADD COLUMN ocr_started_at TEXT",
+                "ocr_completed_at": "ALTER TABLE documents ADD COLUMN ocr_completed_at TEXT",
+            }
+            for column, statement in migrations.items():
+                if column not in existing_columns:
+                    conn.execute(statement)
             conn.commit()
 
     def _classify_payload(self, payload: bytes, filename: str) -> DocumentType:
@@ -338,6 +378,10 @@ class IngestionService:
             detected_type=DocumentType(row["detected_type"]),
             status=DocumentStatus(row["status"]),
             created_at=row["created_at"],
+            ocr_pdf_path=row["ocr_pdf_path"],
+            ocr_text_path=row["ocr_text_path"],
+            ocr_started_at=row["ocr_started_at"],
+            ocr_completed_at=row["ocr_completed_at"],
         )
 
 
