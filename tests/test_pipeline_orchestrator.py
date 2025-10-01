@@ -3,6 +3,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 
 if "fastapi" not in sys.modules:
     fastapi_stub = types.ModuleType("fastapi")
@@ -82,7 +84,9 @@ if "pydantic" not in sys.modules:
     pydantic_stub.BaseModel = _BaseModelStub
     sys.modules["pydantic"] = pydantic_stub
 
-from dashboard.app import PipelineOrchestrator
+from fastapi import HTTPException
+
+from dashboard.app import PipelineOrchestrator, StagePayload
 from ingestion.service import DocumentStatus, DocumentType
 
 
@@ -132,3 +136,19 @@ def test_run_operator_resolves_relative_transcript(tmp_path: Path):
 
     assert rows == ["ok"]
     assert operator.calls[0]["text"] == "Hello world"
+
+
+def test_run_stage_ocr_failure_raises_http_error(tmp_path: Path):
+    orchestrator = PipelineOrchestrator(db_path=tmp_path / "documents.db")
+
+    class _FailingOcr:
+        def run_for_document(self, document_id: int):
+            raise RuntimeError("tesseract boom")
+
+    orchestrator.ocr = _FailingOcr()
+
+    with pytest.raises(HTTPException) as excinfo:
+        orchestrator.run_stage("ocr", 123, StagePayload())
+
+    assert excinfo.value.status_code == 500
+    assert excinfo.value.detail == "tesseract boom"
