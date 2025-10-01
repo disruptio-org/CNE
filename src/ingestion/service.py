@@ -34,7 +34,29 @@ import sqlite3
 from dataclasses import dataclass, asdict
 from enum import Enum
 from pathlib import Path
-from typing import BinaryIO, Dict, Iterable, List, Optional
+from typing import TYPE_CHECKING, BinaryIO, Dict, Iterable, List, Optional
+
+try:  # pragma: no cover - optional dependency
+    from fastapi import UploadFile as _FastAPIUploadFile  # type: ignore
+except Exception:  # pragma: no cover - FastAPI not installed
+    _FastAPIUploadFile = None  # type: ignore[assignment]
+
+
+if TYPE_CHECKING:  # pragma: no cover - typing helper
+    from fastapi import APIRouter, File, HTTPException, UploadFile as FastAPIUploadFile
+
+
+if _FastAPIUploadFile is not None:
+    UploadFile = _FastAPIUploadFile
+else:  # pragma: no cover - fallback placeholder for annotation resolution
+
+    class UploadFile:  # type: ignore[too-many-ancestors]
+        """Placeholder stub for FastAPI's ``UploadFile`` when unavailable."""
+
+        def __init__(self, *args, **kwargs) -> None:  # noqa: D401 - no behaviour
+            raise RuntimeError(
+                "FastAPI is required to use UploadFile; install fastapi to build the router."
+            )
 
 
 class DocumentStatus(str, Enum):
@@ -233,8 +255,15 @@ class IngestionService:
         dependency optional when the router integration is not needed.
         """
 
-        from fastapi import APIRouter, File, HTTPException, UploadFile
+        try:
+            from fastapi import APIRouter, File, HTTPException, UploadFile as FastAPIUploadFile
+        except ImportError as exc:  # pragma: no cover - optional dependency not installed
+            raise RuntimeError(
+                "FastAPI is required to build the ingestion router."
+            ) from exc
         from pydantic import BaseModel
+
+        globals()["UploadFile"] = FastAPIUploadFile
 
         service = self
         router = APIRouter(prefix="/ingestion", tags=["ingestion"])
