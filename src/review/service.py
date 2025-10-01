@@ -143,6 +143,8 @@ class ReviewService:
     ) -> None:
         """Persist a reviewer decision for a specific comparison row."""
 
+        self._ensure_document_editable(document_id)
+
         if selected_source not in _ALLOWED_SOURCES:
             raise ValueError(
                 f"Unsupported source {selected_source!r}. Allowed values: {sorted(_ALLOWED_SOURCES)}"
@@ -194,6 +196,8 @@ class ReviewService:
             Number of comparison rows that were marked as accepted.
         """
 
+        self._ensure_document_editable(document_id)
+
         fetch_query = (
             """
             SELECT id, payload
@@ -239,6 +243,52 @@ class ReviewService:
                 )
             conn.commit()
         return len(decisions)
+
+    def approve_document(
+        self,
+        *,
+        document_id: int,
+        approver_id: str,
+        summary: Optional[str] = None,
+    ) -> None:
+        """Mark a document as approved and capture an audit log entry."""
+
+        if not approver_id or not approver_id.strip():
+            raise ValueError("An approver identifier is required to approve a document.")
+
+        approval_time = datetime.now(timezone.utc).isoformat()
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT status FROM documents WHERE id = ?",
+                (document_id,),
+            )
+            row = cursor.fetchone()
+
+            if row is None:
+                raise ValueError(f"Document {document_id} not found.")
+
+            current_status = row[0]
+            if str(current_status or "").upper() == "APPROVED":
+                raise ValueError(f"Document {document_id} is already approved.")
+
+            conn.execute(
+                "UPDATE documents SET status = 'APPROVED' WHERE id = ?",
+                (document_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO audit_log (
+                    document_id,
+                    actor_id,
+                    action,
+                    summary,
+                    created_at
+                ) VALUES (?, ?, 'approve_document', ?, ?)
+                """,
+                (document_id, approver_id.strip(), summary, approval_time),
+            )
+            conn.commit()
 
     # ------------------------------------------------------------------
     # Document helpers
@@ -301,4 +351,35 @@ class ReviewService:
                 )
                 """,
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    document_id INTEGER NOT NULL,
+                    actor_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    summary TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (document_id) REFERENCES documents(id)
+                )
+                """,
+            )
             conn.commit()
+
+    def _ensure_document_editable(self, document_id: int) -> None:
+        status = self._get_document_status(document_id)
+        if status is None:
+            raise ValueError(f"Document {document_id} not found.")
+        if str(status).upper() == "APPROVED":
+            raise ValueError(
+                f"Document {document_id} has already been approved and can no longer be edited."
+            )
+
+    def _get_document_status(self, document_id: int) -> Optional[str]:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT status FROM documents WHERE id = ?",
+                (document_id,),
+            )
+            row = cursor.fetchone()
+        return row[0] if row else None

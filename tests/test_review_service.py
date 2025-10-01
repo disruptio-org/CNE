@@ -1,6 +1,8 @@
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from matching import CandidateComparator
 from review import ReviewService
 
@@ -129,6 +131,33 @@ def test_review_service_workflow(tmp_path: Path) -> None:
     # Ensure the manual decision is stored as expected.
     manual_row = [row for row in saved if row[0] == dispute["comparison_id"]][0]
     assert manual_row[1:] == ("operator_a", "Bruno", "Prefer operator A", "Reviewer 1")
+
+    service.approve_document(document_id=1, approver_id="lead-reviewer", summary="All disputes resolved")
+
+    with sqlite3.connect(db_path) as conn:
+        status_row = conn.execute("SELECT status FROM documents WHERE id = 1").fetchone()
+        assert status_row == ("APPROVED",)
+
+        audit_rows = conn.execute(
+            "SELECT actor_id, action, summary FROM audit_log WHERE document_id = 1"
+        ).fetchall()
+
+    assert audit_rows
+    actor_id, action, summary = audit_rows[-1]
+    assert actor_id == "lead-reviewer"
+    assert action == "approve_document"
+    assert summary == "All disputes resolved"
+
+    with pytest.raises(ValueError):
+        service.save_decision(
+            comparison_id=dispute["comparison_id"],
+            document_id=1,
+            selected_source="manual",
+            final_value="Manual",  # Should be blocked because the document is approved.
+        )
+
+    with pytest.raises(ValueError):
+        service.bulk_accept_agreements(document_id=1)
 
     snippet = service.get_document_snippet(1)
     assert "Primeira linha" in snippet["snippet"]
