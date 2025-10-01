@@ -44,3 +44,33 @@ print(record)
 
 If you are building a FastAPI application, you can expose an ingestion router
 via `service.build_router()`.
+
+## Running the dashboard
+
+The dashboard application lives under the `src/` directory and is distributed as
+an editable Python package. Install it into your environment to make
+`dashboard` importable:
+
+```bash
+pip install -e .
+```
+
+Once installed you can run the ASGI app using Uvicorn:
+
+```bash
+uvicorn dashboard.app:create_app --factory --host 0.0.0.0 --port 8000
+```
+
+If you prefer not to install the package you can instead call the app module
+directly:
+
+```bash
+python -m uvicorn src.dashboard.app:create_app --factory --host 0.0.0.0 --port 8000
+```
+
+For local operators who simply want to launch the service, the repository also
+contains a small helper that adjusts `sys.path` automatically:
+
+```bash
+python scripts/run_dashboard.py
+```
