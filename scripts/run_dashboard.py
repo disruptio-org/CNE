@@ -16,7 +16,7 @@ def main() -> None:
         sys.path.insert(0, str(src_path))
 
     uvicorn.run(
-        "src.dashboard.app:create_app",
+        "dashboard.app:create_app",
         host="0.0.0.0",
         port=8000,
         factory=True,
