@@ -126,14 +126,20 @@ class PipelineOrchestrator:
     def _run_operator(self, operator: Any, document_id: int) -> list:
         record = self._get_document(document_id)
         text_path = record.ocr_text_path
+        text = ""
         if text_path:
             text_file = Path(text_path)
-            if not text_file.is_absolute():
-                text_file = (self.db_path.parent / text_file).resolve()
-            text = text_file.read_text(encoding="utf-8", errors="ignore")
-        else:
+            resolved_file: Path | None = None
+            if text_file.exists():
+                resolved_file = text_file
+            elif not text_file.is_absolute():
+                fallback_file = (self.db_path.parent / text_file).resolve()
+                if fallback_file.exists():
+                    resolved_file = fallback_file
+            if resolved_file is not None:
+                text = resolved_file.read_text(encoding="utf-8", errors="ignore")
+        if not text:
             upload_path = self.db_path.parent / "uploads" / f"{record.file_hash}.txt"
-            text = ""
             if upload_path.exists():
                 text = upload_path.read_text(encoding="utf-8", errors="ignore")
         if not text:
