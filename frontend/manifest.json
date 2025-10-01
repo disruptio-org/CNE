@@ -1,0 +1,9 @@
+{
+  "name": "CNE Processing Console",
+  "short_name": "CNE Console",
+  "start_url": "/app/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#265acc",
+  "icons": []
+}
