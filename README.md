@@ -51,6 +51,13 @@ Install the project in editable mode to make the dashboard package available:
 pip install -e .
 ```
 
+The default installation pulls in [PyMuPDF](https://pymupdf.readthedocs.io/),
+providing a pure-Python rasteriser for scanned PDFs. This avoids the external
+Poppler dependency normally required by `pdf2image`, while still allowing that
+backend to be used if both the library and Poppler binaries are installed.
+`OcrPipeline` automatically prefers PyMuPDF and falls back to `pdf2image` when
+available.【F:src/ocr/pipeline.py†L252-L343】
+
 Then start the FastAPI application. The helper script adjusts `sys.path` and
 runs Uvicorn with the correct factory entry point:
 

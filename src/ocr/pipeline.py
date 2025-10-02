@@ -9,6 +9,7 @@ updated to reflect processing progress.
 
 from __future__ import annotations
 
+import importlib
 import logging
 import re
 import shutil
@@ -249,17 +250,84 @@ class OcrPipeline:
             )
 
     def _render_pdf_to_images(self, source: Path, destination: Path) -> List[Path]:
-        try:  # pragma: no cover - optional dependency
-            from pdf2image import convert_from_path
-        except Exception as exc:  # pragma: no cover - optional dependency
-            raise RuntimeError(
-                "The pdf2image package is required to process scanned PDFs."
-            ) from exc
+        """Rasterise ``source`` into ``destination`` using the available backend."""
+
+        renderers = (
+            self._render_with_pymupdf,
+            self._render_with_pdf2image,
+        )
+
+        for renderer in renderers:
+            pages = renderer(source, destination)
+            if pages is not None:
+                return pages
+
+        raise RuntimeError(
+            "No PDF rasteriser is available. Install PyMuPDF (`pip install pymupdf`) "
+            "or pdf2image along with Poppler binaries to process scanned PDFs."
+        )
+
+    def _render_with_pymupdf(self, source: Path, destination: Path) -> List[Path] | None:
+        """Render ``source`` pages using PyMuPDF when installed."""
+
+        spec = importlib.util.find_spec("fitz")
+        if spec is None:
+            LOGGER.debug("PyMuPDF not available, skipping rasterisation with fitz.")
+            return None
+
+        fitz = importlib.import_module("fitz")
+
+        rendered_pages: List[Path] = []
+        try:
+            with fitz.open(source) as document:
+                for index, page in enumerate(document, start=1):
+                    pixmap = page.get_pixmap()
+                    page_path = destination / f"{source.stem}_page_{index:04d}.png"
+                    pixmap.save(page_path)
+                    rendered_pages.append(page_path)
+        except Exception as exc:  # pragma: no cover - depends on optional backend
+            LOGGER.warning(
+                "PyMuPDF failed to rasterise %s: %s", source.name, exc,
+                exc_info=LOGGER.isEnabledFor(logging.DEBUG),
+            )
+            for artefact in rendered_pages:
+                try:
+                    artefact.unlink()
+                except FileNotFoundError:
+                    pass
+            return None
+
+        return rendered_pages
+
+    def _render_with_pdf2image(self, source: Path, destination: Path) -> List[Path] | None:
+        """Render ``source`` pages using pdf2image if it is available."""
+
+        spec = importlib.util.find_spec("pdf2image")
+        if spec is None:
+            LOGGER.debug("pdf2image not available, skipping Poppler-backed rasterisation.")
+            return None
+
+        pdf2image = importlib.import_module("pdf2image")
 
         try:
-            images = convert_from_path(str(source))
+            images = pdf2image.convert_from_path(str(source))
         except Exception as exc:  # pragma: no cover - depends on local tooling
-            raise RuntimeError(f"Failed to rasterise scanned PDF {source.name}: {exc}") from exc
+            missing_poppler = False
+            exceptions = getattr(pdf2image, "exceptions", None)
+            if exceptions is not None:
+                missing_cls = getattr(exceptions, "PDFInfoNotInstalledError", None)
+                if missing_cls is not None and isinstance(exc, missing_cls):
+                    missing_poppler = True
+
+            if missing_poppler:
+                raise RuntimeError(
+                    "pdf2image is installed but Poppler binaries are missing. Install Poppler "
+                    "or rely on PyMuPDF by adding the `pymupdf` package."
+                ) from exc
+
+            raise RuntimeError(
+                f"Failed to rasterise scanned PDF {source.name} using pdf2image: {exc}"
+            ) from exc
 
         rendered_pages: List[Path] = []
         for index, image in enumerate(images, start=1):
