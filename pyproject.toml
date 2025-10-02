@@ -8,6 +8,9 @@ version = "0.1.0"
 description = "CNE dashboard and services"
 readme = "README.md"
 requires-python = ">=3.9"
+dependencies = [
+    "pymupdf>=1.22.5",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

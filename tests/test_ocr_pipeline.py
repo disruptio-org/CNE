@@ -322,3 +322,68 @@ def test_pipeline_renders_scanned_pdf_to_images(tmp_path: Path):
     else:
         pdf_file = (db_path.parent / pdf_rel).resolve()
     assert pdf_file.exists()
+
+
+def test_pipeline_falls_back_to_pdf2image_when_pymupdf_unavailable(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    uploads_dir = data_dir / "uploads"
+    ocr_dir = data_dir / "ocr"
+    db_path = data_dir / "documents.db"
+
+    ingestion = IngestionService(upload_dir=uploads_dir, db_path=db_path)
+
+    payload = _build_scanned_pdf()
+    record = ingestion.ingest_upload(payload, "scanned.pdf")
+    assert record.detected_type == DocumentType.PDF_SCANNED
+
+    pipeline = OcrPipeline(
+        db_path=db_path,
+        upload_dir=uploads_dir,
+        ocr_output_dir=ocr_dir,
+    )
+
+    render_order: list[str] = []
+
+    def _skip_pymupdf(self, source: Path, destination: Path):
+        render_order.append("pymupdf")
+        return None
+
+    def _fake_pdf2image(self, source: Path, destination: Path):
+        render_order.append("pdf2image")
+        page_path = destination / "page-0001.png"
+        page_path.write_bytes(_MINIMAL_PNG)
+        return [page_path]
+
+    def _fake_tesseract(self, input_paths, output_base: Path, extra_args=None):
+        if extra_args and "pdf" in extra_args:
+            output_base.with_suffix(".pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+        else:
+            output_base.with_suffix(".txt").write_text(
+                "Recognised text from fallback OCR",
+                encoding="utf-8",
+            )
+
+    pipeline._render_with_pymupdf = types.MethodType(_skip_pymupdf, pipeline)
+    pipeline._render_with_pdf2image = types.MethodType(_fake_pdf2image, pipeline)
+    pipeline._run_tesseract = types.MethodType(_fake_tesseract, pipeline)
+
+    updated = pipeline.run_for_document(record.id)
+
+    assert render_order == ["pymupdf", "pdf2image"]
+    assert updated.status == DocumentStatus.OCR_DONE
+
+    text_rel = Path(updated.ocr_text_path)
+    if text_rel.is_absolute():
+        text_file = text_rel
+    else:
+        text_file = (db_path.parent / text_rel).resolve()
+    assert text_file.exists()
+    text_content = text_file.read_text(encoding="utf-8").strip()
+    assert "Recognised text from fallback OCR" in text_content
+
+    pdf_rel = Path(updated.ocr_pdf_path)
+    if pdf_rel.is_absolute():
+        pdf_file = pdf_rel
+    else:
+        pdf_file = (db_path.parent / pdf_rel).resolve()
+    assert pdf_file.exists()
