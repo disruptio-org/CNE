@@ -1,5 +1,5 @@
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --surface: #ffffffd8;
   --border: #d0d7de;
@@ -8,18 +8,6 @@
   --text-muted: #6c757d;
   --bg: #f5f7fb;
   --shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --surface: rgba(15, 23, 42, 0.9);
-    --border: rgba(148, 163, 184, 0.25);
-    --accent: #8bafff;
-    --accent-contrast: #0f172a;
-    --text-muted: #9ca3af;
-    --bg: #0f172a;
-    --shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  }
 }
 
 * {
@@ -32,12 +20,6 @@ body {
   background: radial-gradient(circle at top left, rgba(38, 90, 204, 0.15), transparent 45%), var(--bg);
   min-height: 100vh;
   color: #111827;
-}
-
-@media (prefers-color-scheme: dark) {
-  body {
-    color: #f8fafc;
-  }
 }
 
 .app-header {
