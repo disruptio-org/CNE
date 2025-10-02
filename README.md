@@ -45,7 +45,16 @@ implementations bundled with the dashboard.【F:src/dashboard/app.py†L38-L82�
 
 ## Running the dashboard API
 
-Install the project in editable mode to make the dashboard package available:
+Install the project in editable mode to make the dashboard package available. If
+you have just cloned the repository make sure the `cne_ai` submodule is
+initialised so that the AI heuristics are available to the application:
+
+```bash
+git submodule update --init --recursive cne_ai
+```
+
+With the submodule checked out, install the project in editable mode to make the
+dashboard package available:
 
 ```bash
 pip install -e .
