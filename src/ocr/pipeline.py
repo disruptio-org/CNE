@@ -281,12 +281,23 @@ class OcrPipeline:
         if extra_args:
             command.extend(extra_args)
         LOGGER.debug("Running tesseract command: %s", " ".join(command))
+        sources = ", ".join(Path(path).name for path in inputs)
         try:
-            result = subprocess.run(command, capture_output=True, text=True, check=False)
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
         except FileNotFoundError as exc:  # pragma: no cover - environment dependent
             raise RuntimeError("Tesseract binary not found. Ensure it is installed and on PATH.") from exc
+        if result.stdout:
+            LOGGER.debug("Tesseract stdout for %s: %s", sources, result.stdout.strip())
+        if result.stderr:
+            LOGGER.debug("Tesseract stderr for %s: %s", sources, result.stderr.strip())
         if result.returncode != 0:
-            sources = ", ".join(Path(path).name for path in inputs)
             raise RuntimeError(
                 f"Tesseract failed for {sources}: {result.stderr.strip() or result.stdout.strip()}"
             )

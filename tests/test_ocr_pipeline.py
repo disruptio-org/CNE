@@ -3,6 +3,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 
 if "fastapi" not in sys.modules:
     fastapi_stub = types.ModuleType("fastapi")
@@ -467,3 +469,47 @@ def test_pipeline_combines_multiple_scanned_pages(tmp_path: Path):
     assert merge_calls
     _, merge_inputs = merge_calls[0]
     assert len(merge_inputs) == 2
+
+
+def test_run_tesseract_failure_handles_non_utf8_output(tmp_path: Path, monkeypatch, caplog):
+    data_dir = tmp_path / "data"
+    uploads_dir = data_dir / "uploads"
+    ocr_dir = data_dir / "ocr"
+    db_path = data_dir / "documents.db"
+
+    pipeline = OcrPipeline(
+        db_path=db_path,
+        upload_dir=uploads_dir,
+        ocr_output_dir=ocr_dir,
+    )
+
+    input_path = tmp_path / "page-0001.png"
+    input_path.write_bytes(_MINIMAL_PNG)
+
+    non_utf8_stdout = b"processed\xffoutput"
+    non_utf8_stderr = b"error\xffdetails"
+
+    def _fake_run(command, capture_output, text, encoding, errors, check):
+        assert text is True
+        assert encoding == "utf-8"
+        assert errors == "replace"
+        assert check is False
+
+        class _Result:
+            returncode = 1
+            stdout = non_utf8_stdout.decode("utf-8", "replace")
+            stderr = non_utf8_stderr.decode("utf-8", "replace")
+
+        return _Result()
+
+    monkeypatch.setattr("ocr.pipeline.subprocess.run", _fake_run)
+
+    with caplog.at_level("DEBUG"):
+        with pytest.raises(RuntimeError) as excinfo:
+            pipeline._run_tesseract(input_path, tmp_path / "output")
+
+    message = str(excinfo.value)
+    assert "Tesseract failed" in message
+    assert "\ufffd" in message
+    logged = "".join(record.message for record in caplog.records)
+    assert "\ufffd" in logged
