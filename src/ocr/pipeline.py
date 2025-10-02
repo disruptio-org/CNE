@@ -132,8 +132,50 @@ class OcrPipeline:
                     f"No rasterised pages produced from scanned PDF {record.file_name!r}."
                 )
 
-            self._run_tesseract(page_images, base_output)
-            self._run_tesseract(page_images, base_output, ["pdf"])
+            per_page_texts: List[Path] = []
+            per_page_pdfs: List[Path] = []
+            for index, page_image in enumerate(page_images, start=1):
+                page_output_base = base_output.parent / f"{base_output.name}_page_{index:04d}"
+                page_text = page_output_base.with_suffix(".txt")
+                page_pdf = page_output_base.with_suffix(".pdf")
+                for artefact in (page_text, page_pdf):
+                    if artefact.exists():
+                        artefact.unlink()
+
+                self._run_tesseract(page_image, page_output_base)
+                self._run_tesseract(page_image, page_output_base, ["pdf"])
+
+                if not page_text.exists():
+                    raise RuntimeError(
+                        "Tesseract did not produce expected per-page text output for "
+                        f"{record.file_name!r}."
+                    )
+                if not page_pdf.exists():
+                    raise RuntimeError(
+                        "Tesseract did not produce expected per-page PDF output for "
+                        f"{record.file_name!r}."
+                    )
+                per_page_texts.append(page_text)
+                per_page_pdfs.append(page_pdf)
+
+        with text_output.open("w", encoding="utf-8") as combined_text:
+            written = False
+            for page_text in per_page_texts:
+                text = page_text.read_text(encoding="utf-8")
+                if written:
+                    combined_text.write("\n")
+                combined_text.write(text)
+                if not text.endswith("\n"):
+                    combined_text.write("\n")
+                written = True
+
+        self._merge_pdfs(pdf_output, per_page_pdfs)
+
+        for artefact in (*per_page_texts, *per_page_pdfs):
+            try:
+                artefact.unlink()
+            except FileNotFoundError:
+                pass
         completed_at = self._timestamp()
 
         if not text_output.exists():
@@ -248,6 +290,41 @@ class OcrPipeline:
             raise RuntimeError(
                 f"Tesseract failed for {sources}: {result.stderr.strip() or result.stdout.strip()}"
             )
+
+    def _merge_pdfs(self, output: Path, inputs: Sequence[Path]) -> None:
+        if not inputs:
+            raise RuntimeError("No PDF pages provided for merge operation.")
+
+        spec = importlib.util.find_spec("fitz")
+        if spec is not None:
+            fitz = importlib.import_module("fitz")
+            merged = fitz.open()
+            try:
+                for pdf_path in inputs:
+                    if not Path(pdf_path).exists():
+                        raise RuntimeError(f"Missing PDF artefact {pdf_path} during merge.")
+                    with fitz.open(pdf_path) as document:
+                        merged.insert_pdf(document)
+                merged.save(output)
+            finally:
+                merged.close()
+            return
+
+        pdfunite = shutil.which("pdfunite")
+        if pdfunite:
+            command = [pdfunite, *map(str, inputs), str(output)]
+            LOGGER.debug("Running pdfunite command: %s", " ".join(command))
+            result = subprocess.run(command, capture_output=True, text=True, check=False)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"pdfunite failed: {result.stderr.strip() or result.stdout.strip()}"
+                )
+            return
+
+        raise RuntimeError(
+            "Unable to merge per-page PDFs: install PyMuPDF (`pip install pymupdf`) or "
+            "provide the `pdfunite` binary."
+        )
 
     def _render_pdf_to_images(self, source: Path, destination: Path) -> List[Path]:
         """Rasterise ``source`` into ``destination`` using the available backend."""
