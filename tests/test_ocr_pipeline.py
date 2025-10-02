@@ -269,6 +269,7 @@ def test_pipeline_renders_scanned_pdf_to_images(tmp_path: Path):
 
     render_calls: list[Path] = []
     tesseract_calls: list[dict[str, object]] = []
+    merge_calls: list[tuple[Path, list[Path]]] = []
 
     def _fake_render(self, source: Path, destination: Path):
         page_path = destination / "page-0001.png"
@@ -285,6 +286,7 @@ def test_pipeline_renders_scanned_pdf_to_images(tmp_path: Path):
             {
                 "inputs": paths,
                 "args": list(extra_args) if extra_args else None,
+                "output_base": output_base,
             }
         )
         if extra_args and "pdf" in extra_args:
@@ -295,8 +297,13 @@ def test_pipeline_renders_scanned_pdf_to_images(tmp_path: Path):
                 encoding="utf-8",
             )
 
+    def _fake_merge(self, output: Path, inputs: list[Path]):
+        merge_calls.append((output, list(inputs)))
+        output.write_bytes(b"%PDF-1.4\n%%EOF\n")
+
     pipeline._render_pdf_to_images = types.MethodType(_fake_render, pipeline)
     pipeline._run_tesseract = types.MethodType(_fake_tesseract, pipeline)
+    pipeline._merge_pdfs = types.MethodType(_fake_merge, pipeline)
 
     updated = pipeline.run_for_document(record.id)
 
@@ -306,6 +313,10 @@ def test_pipeline_renders_scanned_pdf_to_images(tmp_path: Path):
     assert all(path.suffix == ".png" for call in tesseract_calls for path in call["inputs"])
     assert tesseract_calls[0]["args"] is None
     assert tesseract_calls[1]["args"] == ["pdf"]
+    assert merge_calls
+    merge_output, merge_inputs = merge_calls[0]
+    assert merge_output.suffix == ".pdf"
+    assert len(merge_inputs) == 1
 
     text_rel = Path(updated.ocr_text_path)
     if text_rel.is_absolute():
@@ -363,9 +374,13 @@ def test_pipeline_falls_back_to_pdf2image_when_pymupdf_unavailable(tmp_path: Pat
                 encoding="utf-8",
             )
 
+    def _fake_merge(self, output: Path, inputs: list[Path]):
+        output.write_bytes(b"%PDF-1.4\n%%EOF\n")
+
     pipeline._render_with_pymupdf = types.MethodType(_skip_pymupdf, pipeline)
     pipeline._render_with_pdf2image = types.MethodType(_fake_pdf2image, pipeline)
     pipeline._run_tesseract = types.MethodType(_fake_tesseract, pipeline)
+    pipeline._merge_pdfs = types.MethodType(_fake_merge, pipeline)
 
     updated = pipeline.run_for_document(record.id)
 
@@ -387,3 +402,68 @@ def test_pipeline_falls_back_to_pdf2image_when_pymupdf_unavailable(tmp_path: Pat
     else:
         pdf_file = (db_path.parent / pdf_rel).resolve()
     assert pdf_file.exists()
+
+
+def test_pipeline_combines_multiple_scanned_pages(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    uploads_dir = data_dir / "uploads"
+    ocr_dir = data_dir / "ocr"
+    db_path = data_dir / "documents.db"
+
+    ingestion = IngestionService(upload_dir=uploads_dir, db_path=db_path)
+
+    payload = _build_scanned_pdf()
+    record = ingestion.ingest_upload(payload, "scanned.pdf")
+    assert record.detected_type == DocumentType.PDF_SCANNED
+
+    pipeline = OcrPipeline(
+        db_path=db_path,
+        upload_dir=uploads_dir,
+        ocr_output_dir=ocr_dir,
+    )
+
+    merge_calls: list[tuple[Path, list[Path]]] = []
+
+    def _fake_render(self, source: Path, destination: Path):
+        pages: list[Path] = []
+        for index in range(1, 3):
+            page_path = destination / f"page-{index:04d}.png"
+            page_path.write_bytes(_MINIMAL_PNG)
+            pages.append(page_path)
+        return pages
+
+    def _fake_tesseract(self, input_paths, output_base: Path, extra_args=None):
+        marker_parts = output_base.name.rsplit("_page_", 1)
+        page_marker = f"page_{marker_parts[1]}" if len(marker_parts) == 2 else output_base.name
+        if extra_args and "pdf" in extra_args:
+            output_base.with_suffix(".pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+        else:
+            output_base.with_suffix(".txt").write_text(
+                f"Recognised text for {page_marker}",
+                encoding="utf-8",
+            )
+
+    def _fake_merge(self, output: Path, inputs: list[Path]):
+        merge_calls.append((output, list(inputs)))
+        output.write_bytes(b"%PDF-1.4\n%%EOF\n")
+
+    pipeline._render_pdf_to_images = types.MethodType(_fake_render, pipeline)
+    pipeline._run_tesseract = types.MethodType(_fake_tesseract, pipeline)
+    pipeline._merge_pdfs = types.MethodType(_fake_merge, pipeline)
+
+    updated = pipeline.run_for_document(record.id)
+
+    assert updated.status == DocumentStatus.OCR_DONE
+    text_rel = Path(updated.ocr_text_path)
+    text_file = text_rel if text_rel.is_absolute() else (db_path.parent / text_rel).resolve()
+    assert text_file.exists()
+    text_content = text_file.read_text(encoding="utf-8")
+    assert "Recognised text for page_0001" in text_content
+    assert "Recognised text for page_0002" in text_content
+
+    pdf_rel = Path(updated.ocr_pdf_path)
+    pdf_file = pdf_rel if pdf_rel.is_absolute() else (db_path.parent / pdf_rel).resolve()
+    assert pdf_file.exists()
+    assert merge_calls
+    _, merge_inputs = merge_calls[0]
+    assert len(merge_inputs) == 2
