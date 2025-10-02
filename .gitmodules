@@ -1,0 +1,3 @@
+[submodule "cne_ai"]
+	path = cne_ai
+	url = https://github.com/disruptio-org/CNE_AI
